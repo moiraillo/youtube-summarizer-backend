@@ -1,0 +1,11 @@
+flask
+flask-cors
+youtube-transcript-api
+python-dotenv
+pymongo[srv]
+google-auth
+google-auth-oauthlib
+requests
+gunicorn
+certifi
+edge-tts
