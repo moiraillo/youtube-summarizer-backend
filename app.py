@@ -53,6 +53,8 @@ GOOGLE_CLIENT_ID = os.getenv('GOOGLE_CLIENT_ID')
 @app.route('/api/transcript/<video_id>', methods=['GET'])
 def get_transcript(video_id):
     """YouTube 영상의 자막을 가져옵니다."""
+    
+    # 방법 1: youtube-transcript-api 시도
     try:
         api = YouTubeTranscriptApi()
         try:
@@ -70,14 +72,103 @@ def get_transcript(video_id):
             'transcript': full_text,
             'video_id': video_id
         })
-        
     except Exception as e:
-        print(f"자막 추출 실패: {str(e)}")
+        print(f"youtube-transcript-api 실패, Innertube 방식 시도: {str(e)}")
+    
+    # 방법 2: YouTube Innertube API 직접 호출 (클라우드 서버 호환)
+    try:
+        full_text = fetch_transcript_innertube(video_id)
+        return jsonify({
+            'success': True,
+            'transcript': full_text,
+            'video_id': video_id
+        })
+    except Exception as e:
+        print(f"Innertube 자막 추출 실패: {str(e)}")
         return jsonify({
             'success': False,
             'error': '자막을 찾을 수 없습니다',
             'video_id': video_id
         }), 404
+
+
+def fetch_transcript_innertube(video_id):
+    """YouTube Innertube API로 자막을 직접 가져옵니다."""
+    import json as json_module
+    import re
+    from html import unescape
+    
+    headers = {
+        'User-Agent': 'Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/120.0.0.0 Safari/537.36',
+        'Accept-Language': 'ko-KR,ko;q=0.9,en-US;q=0.8,en;q=0.7',
+        'Content-Type': 'application/json',
+    }
+    
+    # Innertube Player API로 자막 트랙 정보 가져오기
+    innertube_data = {
+        "context": {
+            "client": {
+                "clientName": "WEB",
+                "clientVersion": "2.20250101.00.00",
+                "hl": "ko",
+                "gl": "KR"
+            }
+        },
+        "videoId": video_id
+    }
+    
+    response = requests.post(
+        'https://www.youtube.com/youtubei/v1/player?key=AIzaSyAO_FJ2SlqU8Q4STEHLGCilw_Y9_11qcW8',
+        json=innertube_data,
+        headers=headers
+    )
+    
+    if response.status_code != 200:
+        raise Exception('YouTube API 요청 실패')
+    
+    player_data = response.json()
+    
+    # 자막 트랙 정보 추출
+    captions = player_data.get('captions', {})
+    renderer = captions.get('playerCaptionsTracklistRenderer', {})
+    tracks = renderer.get('captionTracks', [])
+    
+    if not tracks:
+        raise Exception('사용 가능한 자막이 없습니다')
+    
+    # 한국어 자막 우선 → 영어 → 첫 번째 트랙
+    track_url = None
+    for lang in ['ko', 'en']:
+        for track in tracks:
+            if track.get('languageCode') == lang:
+                track_url = track['baseUrl']
+                break
+        if track_url:
+            break
+    
+    if not track_url:
+        track_url = tracks[0]['baseUrl']
+    
+    # 자막 데이터 가져오기 (JSON 형식)
+    caption_response = requests.get(track_url + '&fmt=json3', headers=headers)
+    
+    if caption_response.status_code != 200:
+        raise Exception('자막 데이터를 가져올 수 없습니다')
+    
+    caption_data = caption_response.json()
+    
+    # 텍스트 추출
+    texts = []
+    for event in caption_data.get('events', []):
+        for seg in event.get('segs', []):
+            text = seg.get('utf8', '').strip()
+            if text and text != '\n':
+                texts.append(unescape(text))
+    
+    if not texts:
+        raise Exception('자막 텍스트가 비어있습니다')
+    
+    return ' '.join(texts)
 
 
 # ============================================
