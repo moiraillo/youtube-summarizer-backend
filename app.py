@@ -1,7 +1,3 @@
-사용자 데이터 저장
-- API 키 서버 관리
-"""
-
 import os
 import asyncio
 import edge_tts
@@ -56,18 +52,18 @@ def google_login():
         token = request.json.get('token')
         if not token:
             return jsonify({'error': 'Token required'}), 400
-        
+
         idinfo = id_token.verify_oauth2_token(
             token, google_requests.Request(), GOOGLE_CLIENT_ID
         )
-        
+
         user_id = idinfo['sub']
         email = idinfo['email']
         name = idinfo.get('name', '')
         picture = idinfo.get('picture', '')
-        
+
         user = users_collection.find_one({'user_id': user_id})
-        
+
         if not user:
             user = {
                 'user_id': user_id,
@@ -77,9 +73,9 @@ def google_login():
                 'channels': []
             }
             users_collection.insert_one(user)
-        
+
         auth_token = create_auth_token(user_id)
-        
+
         return jsonify({
             'success': True,
             'token': auth_token,
@@ -91,11 +87,10 @@ def google_login():
                 'channels': user.get('channels', [])
             }
         })
-        
+
     except ValueError:
         return jsonify({'error': 'Invalid token'}), 401
     except Exception as e:
-        print(f"로그인 오류: {str(e)}")
         return jsonify({'error': str(e)}), 500
 
 
@@ -109,11 +104,11 @@ def check_auth():
     user_id = get_current_user_id()
     if not user_id:
         return jsonify({'authenticated': False}), 401
-    
+
     user = users_collection.find_one({'user_id': user_id})
     if not user:
         return jsonify({'authenticated': False}), 401
-    
+
     return jsonify({
         'authenticated': True,
         'user': {
@@ -131,7 +126,7 @@ def get_channels():
     user_id = get_current_user_id()
     if not user_id:
         return jsonify({'error': 'Unauthorized'}), 401
-    
+
     user = users_collection.find_one({'user_id': user_id})
     return jsonify({'channels': user.get('channels', []) if user else []})
 
@@ -141,19 +136,19 @@ def add_channel():
     user_id = get_current_user_id()
     if not user_id:
         return jsonify({'error': 'Unauthorized'}), 401
-    
+
     data = request.json
     channel = {
         'url': data.get('url'),
         'id': data.get('id'),
         'name': data.get('name')
     }
-    
+
     users_collection.update_one(
         {'user_id': user_id},
         {'$push': {'channels': channel}}
     )
-    
+
     return jsonify({'success': True, 'channel': channel})
 
 
@@ -162,9 +157,9 @@ def delete_channel(index):
     user_id = get_current_user_id()
     if not user_id:
         return jsonify({'error': 'Unauthorized'}), 401
-    
+
     user = users_collection.find_one({'user_id': user_id})
-    
+
     if user and 'channels' in user:
         channels = user['channels']
         if 0 <= index < len(channels):
@@ -174,7 +169,7 @@ def delete_channel(index):
                 {'$set': {'channels': channels}}
             )
             return jsonify({'success': True})
-    
+
     return jsonify({'error': 'Channel not found'}), 404
 
 
@@ -188,16 +183,15 @@ def get_api_keys():
 
 @app.route('/api/tts', methods=['POST'])
 def text_to_speech():
-    """Edge TTS를 사용한 음성 생성"""
     try:
         data = request.json
         text = data.get('text', '')
-        
+
         if not text:
             return jsonify({'error': 'Text required'}), 400
-        
+
         voice = 'ko-KR-SunHiNeural'
-        
+
         async def generate():
             communicate = edge_tts.Communicate(text, voice)
             audio_data = io.BytesIO()
@@ -206,18 +200,17 @@ def text_to_speech():
                     audio_data.write(chunk["data"])
             audio_data.seek(0)
             return audio_data
-        
+
         audio_data = asyncio.run(generate())
-        
+
         return send_file(
             audio_data,
             mimetype='audio/mpeg',
             as_attachment=False,
             download_name='speech.mp3'
         )
-        
+
     except Exception as e:
-        print(f"TTS 오류: {str(e)}")
         return jsonify({'error': str(e)}), 500
 
 
@@ -230,6 +223,4 @@ def health_check():
 
 
 if __name__ == '__main__':
-    print("🚀 YouTube 투자 요약기 백엔드 서버 시작")
-    print(f"📡 주소: http://localhost:5001")
     app.run(host='0.0.0.0', port=5001, debug=True)
