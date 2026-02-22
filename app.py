@@ -6,7 +6,10 @@ YouTube 투자 요약기 - 백엔드 서버
 """
 
 import os
-from flask import Flask, request, jsonify
+import asyncio
+import edge_tts
+import io
+from flask import Flask, request, jsonify, send_file
 from flask_cors import CORS
 from dotenv import load_dotenv
 from pymongo import MongoClient
@@ -184,6 +187,41 @@ def get_api_keys():
         'youtube': YOUTUBE_API_KEY,
         'gemini': GEMINI_API_KEY
     })
+
+
+@app.route('/api/tts', methods=['POST'])
+def text_to_speech():
+    """Edge TTS를 사용한 음성 생성"""
+    try:
+        data = request.json
+        text = data.get('text', '')
+        
+        if not text:
+            return jsonify({'error': 'Text required'}), 400
+        
+        voice = 'ko-KR-SunHiNeural'
+        
+        async def generate():
+            communicate = edge_tts.Communicate(text, voice)
+            audio_data = io.BytesIO()
+            async for chunk in communicate.stream():
+                if chunk["type"] == "audio":
+                    audio_data.write(chunk["data"])
+            audio_data.seek(0)
+            return audio_data
+        
+        audio_data = asyncio.run(generate())
+        
+        return send_file(
+            audio_data,
+            mimetype='audio/mpeg',
+            as_attachment=False,
+            download_name='speech.mp3'
+        )
+        
+    except Exception as e:
+        print(f"TTS 오류: {str(e)}")
+        return jsonify({'error': str(e)}), 500
 
 
 @app.route('/api/health', methods=['GET'])
