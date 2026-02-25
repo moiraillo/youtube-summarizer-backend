@@ -214,6 +214,175 @@ def text_to_speech():
         return jsonify({'error': str(e)}), 500
 
 
+@app.route('/api/transcript/<video_id>', methods=['GET'])
+def get_transcript(video_id):
+    import re
+    import json as jsonlib
+
+    # 방법 1: youtube-transcript-api (가장 안정적)
+    try:
+        from youtube_transcript_api import YouTubeTranscriptApi
+        transcript_list = YouTubeTranscriptApi.list_transcripts(video_id)
+        transcript = None
+        for lang in ['ko', 'en']:
+            try:
+                transcript = transcript_list.find_transcript([lang])
+                break
+            except Exception:
+                continue
+        if not transcript:
+            transcript = transcript_list.find_transcript(
+                [t.language_code for t in transcript_list]
+            )
+        if transcript:
+            fetched = transcript.fetch()
+            text = ' '.join([item.text if hasattr(item, 'text') else item.get('text', '') for item in fetched])
+            if text.strip():
+                return jsonify({'transcript': text, 'video_id': video_id})
+    except Exception as e:
+        app.logger.info('youtube-transcript-api failed: ' + str(e))
+
+    # 방법 2: Innertube API
+    clients = [
+        {
+            'name': 'ANDROID',
+            'payload': {
+                'context': {
+                    'client': {
+                        'clientName': 'ANDROID',
+                        'clientVersion': '19.09.37',
+                        'hl': 'ko',
+                        'gl': 'KR',
+                        'androidSdkVersion': 30
+                    }
+                },
+                'videoId': video_id
+            },
+            'key': 'AIzaSyA8eiZmM1FaDVjRy-df2KTyQ_vz_yYM39w'
+        },
+        {
+            'name': 'WEB',
+            'payload': {
+                'context': {
+                    'client': {
+                        'clientName': 'WEB',
+                        'clientVersion': '2.20250101.00.00',
+                        'hl': 'ko',
+                        'gl': 'KR'
+                    }
+                },
+                'videoId': video_id
+            },
+            'key': 'AIzaSyAO_FJ2SlqU8Q4STEHLGCilw_Y9_11qcW8'
+        }
+    ]
+
+    for c in clients:
+        try:
+            res = requests.post(
+                'https://youtubei.googleapis.com/youtubei/v1/player?key=' + c['key'],
+                json=c['payload'],
+                timeout=10
+            )
+            if res.status_code != 200:
+                continue
+            data = res.json()
+            tracks = (data.get('captions', {})
+                      .get('playerCaptionsTracklistRenderer', {})
+                      .get('captionTracks', []))
+            if not tracks:
+                continue
+
+            track = None
+            for lang in ['ko', 'en']:
+                track = next((t for t in tracks if t.get('languageCode') == lang), None)
+                if track:
+                    break
+            if not track:
+                track = tracks[0]
+
+            cap_res = requests.get(track['baseUrl'], timeout=10)
+            if cap_res.status_code != 200:
+                continue
+            cap_text = cap_res.text
+            texts = extract_texts(cap_text)
+            if texts:
+                return jsonify({'transcript': ' '.join(texts), 'video_id': video_id})
+        except Exception:
+            continue
+
+    # 방법 3: 웹 스크래핑
+    try:
+        page_res = requests.get(
+            'https://www.youtube.com/watch?v=' + video_id,
+            headers={
+                'User-Agent': 'Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36',
+                'Accept-Language': 'ko-KR,ko;q=0.9,en;q=0.8'
+            },
+            timeout=15
+        )
+        if page_res.status_code == 200:
+            match = re.search(r'ytInitialPlayerResponse\s*=\s*(\{.+?\});', page_res.text)
+            if match:
+                player_data = jsonlib.loads(match.group(1))
+                tracks = (player_data.get('captions', {})
+                          .get('playerCaptionsTracklistRenderer', {})
+                          .get('captionTracks', []))
+                if tracks:
+                    track = None
+                    for lang in ['ko', 'en']:
+                        track = next((t for t in tracks if t.get('languageCode') == lang), None)
+                        if track:
+                            break
+                    if not track:
+                        track = tracks[0]
+                    cap_res = requests.get(track['baseUrl'], timeout=10)
+                    if cap_res.status_code == 200:
+                        texts = extract_texts(cap_res.text)
+                        if texts:
+                            return jsonify({'transcript': ' '.join(texts), 'video_id': video_id})
+    except Exception:
+        pass
+
+    return jsonify({'error': 'No captions available'}), 404
+
+
+def extract_texts(content):
+    import re
+    texts = []
+
+    # Format 3: <p> with <s> subtags
+    p_matches = re.findall(r'<p [^>]*>[\s\S]*?</p>', content)
+    if p_matches:
+        for p in p_matches:
+            s_matches = re.findall(r'<s[^>]*>([\s\S]*?)</s>', p)
+            if s_matches:
+                line = ''.join(s_matches)
+            else:
+                line = re.sub(r'<[^>]+>', '', p)
+            line = (line.replace('&amp;', '&').replace('&lt;', '<')
+                    .replace('&gt;', '>').replace('&#39;', "'")
+                    .replace('&quot;', '"').strip())
+            if line:
+                texts.append(line)
+        if texts:
+            return texts
+
+    # XML <text> format
+    text_matches = re.findall(r'<text[^>]*>([\s\S]*?)</text>', content)
+    if text_matches:
+        for t in text_matches:
+            clean = (t.replace('&amp;', '&').replace('&lt;', '<')
+                     .replace('&gt;', '>').replace('&#39;', "'")
+                     .replace('&quot;', '"').strip())
+            if clean:
+                texts.append(clean)
+        if texts:
+            return texts
+
+    return texts
+
+
 @app.route('/api/health', methods=['GET'])
 def health_check():
     return jsonify({
