@@ -218,31 +218,41 @@ def text_to_speech():
 def get_transcript(video_id):
     import re
     import json as jsonlib
+    import time
 
-    # 방법 1: youtube-transcript-api (가장 안정적)
+    debug = request.args.get('debug') == '1'
+    logs = []
+
+    # 방법 1: youtube-transcript-api (신버전 1.x)
     try:
         from youtube_transcript_api import YouTubeTranscriptApi
-        transcript_list = YouTubeTranscriptApi.list_transcripts(video_id)
-        transcript = None
-        for lang in ['ko', 'en']:
-            try:
-                transcript = transcript_list.find_transcript([lang])
-                break
-            except Exception:
-                continue
-        if not transcript:
-            transcript = transcript_list.find_transcript(
-                [t.language_code for t in transcript_list]
-            )
-        if transcript:
-            fetched = transcript.fetch()
-            text = ' '.join([item.text if hasattr(item, 'text') else item.get('text', '') for item in fetched])
-            if text.strip():
-                return jsonify({'transcript': text, 'video_id': video_id})
+        api = YouTubeTranscriptApi()
+        fetched = api.fetch(video_id, languages=['ko', 'en'])
+        text = ' '.join([item.text if hasattr(item, 'text') else item.get('text', '') for item in fetched])
+        if text.strip():
+            logs.append('방법1 신API 성공: ' + str(len(text)) + '자')
+            if debug:
+                return jsonify({'transcript': text[:200], 'debug': logs, 'video_id': video_id})
+            return jsonify({'transcript': text, 'video_id': video_id})
+        logs.append('방법1 신API: 텍스트 비어있음')
     except Exception as e:
-        app.logger.info('youtube-transcript-api failed: ' + str(e))
+        logs.append('방법1 신API 실패: ' + str(e))
 
-    # 방법 2: Innertube API
+    # 방법 1b: youtube-transcript-api (구버전 0.x)
+    try:
+        from youtube_transcript_api import YouTubeTranscriptApi
+        fetched = YouTubeTranscriptApi.get_transcript(video_id, languages=['ko', 'en'])
+        text = ' '.join([item.get('text', '') for item in fetched])
+        if text.strip():
+            logs.append('방법1b 구API 성공: ' + str(len(text)) + '자')
+            if debug:
+                return jsonify({'transcript': text[:200], 'debug': logs, 'video_id': video_id})
+            return jsonify({'transcript': text, 'video_id': video_id})
+        logs.append('방법1b 구API: 텍스트 비어있음')
+    except Exception as e:
+        logs.append('방법1b 구API 실패: ' + str(e))
+
+    # 방법 2: Innertube API (2회 재시도)
     clients = [
         {
             'name': 'ANDROID',
@@ -278,45 +288,58 @@ def get_transcript(video_id):
     ]
 
     for c in clients:
-        try:
-            res = requests.post(
-                'https://youtubei.googleapis.com/youtubei/v1/player?key=' + c['key'],
-                json=c['payload'],
-                timeout=10
-            )
-            if res.status_code != 200:
-                continue
-            data = res.json()
-            tracks = (data.get('captions', {})
-                      .get('playerCaptionsTracklistRenderer', {})
-                      .get('captionTracks', []))
-            if not tracks:
-                continue
+        for attempt in range(2):
+            try:
+                if attempt > 0:
+                    time.sleep(1)
+                res = requests.post(
+                    'https://youtubei.googleapis.com/youtubei/v1/player?key=' + c['key'],
+                    json=c['payload'],
+                    timeout=10
+                )
+                if res.status_code != 200:
+                    logs.append('방법2 ' + c['name'] + ' 시도' + str(attempt+1) + ': HTTP ' + str(res.status_code))
+                    continue
+                data = res.json()
+                ps = data.get('playabilityStatus', {})
+                if ps.get('status') != 'OK':
+                    logs.append('방법2 ' + c['name'] + ' 시도' + str(attempt+1) + ': status=' + ps.get('status', 'unknown'))
+                    continue
+                tracks = (data.get('captions', {})
+                          .get('playerCaptionsTracklistRenderer', {})
+                          .get('captionTracks', []))
+                if not tracks:
+                    logs.append('방법2 ' + c['name'] + ' 시도' + str(attempt+1) + ': 자막트랙 없음')
+                    continue
 
-            track = None
-            for lang in ['ko', 'en']:
-                track = next((t for t in tracks if t.get('languageCode') == lang), None)
-                if track:
-                    break
-            if not track:
-                track = tracks[0]
+                track = None
+                for lang in ['ko', 'en']:
+                    track = next((t for t in tracks if t.get('languageCode') == lang), None)
+                    if track:
+                        break
+                if not track:
+                    track = tracks[0]
 
-            cap_res = requests.get(track['baseUrl'], timeout=10)
-            if cap_res.status_code != 200:
-                continue
-            cap_text = cap_res.text
-            texts = extract_texts(cap_text)
-            if texts:
-                return jsonify({'transcript': ' '.join(texts), 'video_id': video_id})
-        except Exception:
-            continue
+                cap_res = requests.get(track['baseUrl'], timeout=10)
+                if cap_res.status_code != 200:
+                    logs.append('방법2 ' + c['name'] + ' 시도' + str(attempt+1) + ': 자막다운 HTTP ' + str(cap_res.status_code))
+                    continue
+                texts = extract_texts(cap_res.text)
+                if texts:
+                    logs.append('방법2 ' + c['name'] + ' 시도' + str(attempt+1) + ' 성공: ' + str(len(' '.join(texts))) + '자')
+                    if debug:
+                        return jsonify({'transcript': ' '.join(texts)[:200], 'debug': logs, 'video_id': video_id})
+                    return jsonify({'transcript': ' '.join(texts), 'video_id': video_id})
+                logs.append('방법2 ' + c['name'] + ' 시도' + str(attempt+1) + ': extractTexts 실패')
+            except Exception as e:
+                logs.append('방법2 ' + c['name'] + ' 시도' + str(attempt+1) + ' 오류: ' + str(e))
 
     # 방법 3: 웹 스크래핑
     try:
         page_res = requests.get(
             'https://www.youtube.com/watch?v=' + video_id,
             headers={
-                'User-Agent': 'Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36',
+                'User-Agent': 'Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/120.0.0.0 Safari/537.36',
                 'Accept-Language': 'ko-KR,ko;q=0.9,en;q=0.8'
             },
             timeout=15
@@ -340,10 +363,25 @@ def get_transcript(video_id):
                     if cap_res.status_code == 200:
                         texts = extract_texts(cap_res.text)
                         if texts:
+                            logs.append('방법3 웹스크래핑 성공: ' + str(len(' '.join(texts))) + '자')
+                            if debug:
+                                return jsonify({'transcript': ' '.join(texts)[:200], 'debug': logs, 'video_id': video_id})
                             return jsonify({'transcript': ' '.join(texts), 'video_id': video_id})
-    except Exception:
-        pass
+                        else:
+                            logs.append('방법3 웹스크래핑: extractTexts 실패')
+                    else:
+                        logs.append('방법3 웹스크래핑: 자막다운 HTTP ' + str(cap_res.status_code))
+                else:
+                    logs.append('방법3 웹스크래핑: 자막트랙 없음')
+            else:
+                logs.append('방법3 웹스크래핑: ytInitialPlayerResponse 없음')
+        else:
+            logs.append('방법3 웹스크래핑: 페이지 HTTP ' + str(page_res.status_code))
+    except Exception as e:
+        logs.append('방법3 웹스크래핑 오류: ' + str(e))
 
+    if debug:
+        return jsonify({'error': 'No captions', 'debug': logs}), 404
     return jsonify({'error': 'No captions available'}), 404
 
 
