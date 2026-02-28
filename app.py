@@ -372,7 +372,82 @@ def get_transcript(video_id):
             except Exception as e:
                 logs.append('방법2 ' + c['name'] + ' 시도' + str(attempt+1) + ' 오류: ' + str(e))
 
-    # 방법 3: timedtext API 직접 호출
+    # 방법 3: Invidious/Piped 대안 API (자체 서버 IP 사용)
+    alt_apis = [
+        {'name': 'Piped', 'url': 'https://pipedapi.kavin.rocks/streams/' + video_id, 'type': 'piped'},
+        {'name': 'Invidious1', 'url': 'https://vid.puffyan.us/api/v1/captions/' + video_id, 'type': 'invidious'},
+        {'name': 'Invidious2', 'url': 'https://inv.nadeko.net/api/v1/captions/' + video_id, 'type': 'invidious'},
+        {'name': 'Invidious3', 'url': 'https://invidious.nerdvpn.de/api/v1/captions/' + video_id, 'type': 'invidious'},
+    ]
+
+    for api in alt_apis:
+        try:
+            api_res = requests.get(api['url'], timeout=10, headers={
+                'User-Agent': 'Mozilla/5.0'
+            })
+            if api_res.status_code != 200:
+                logs.append('방법3 ' + api['name'] + ': HTTP ' + str(api_res.status_code))
+                continue
+
+            api_data = api_res.json()
+
+            if api['type'] == 'piped':
+                subtitles = api_data.get('subtitles', [])
+                if not subtitles:
+                    logs.append('방법3 ' + api['name'] + ': 자막 없음')
+                    continue
+                sub = None
+                for lang in ['ko', 'en']:
+                    sub = next((s for s in subtitles if s.get('code', '').startswith(lang)), None)
+                    if sub:
+                        break
+                if not sub:
+                    sub = subtitles[0]
+                sub_url = sub.get('url', '')
+                if not sub_url:
+                    logs.append('방법3 ' + api['name'] + ': URL 없음')
+                    continue
+                cap_res = requests.get(sub_url, timeout=10)
+                if cap_res.status_code == 200 and len(cap_res.text) > 50:
+                    texts = extract_texts(cap_res.text)
+                    if texts:
+                        logs.append('방법3 ' + api['name'] + ' 성공: ' + str(len(' '.join(texts))) + '자')
+                        if debug:
+                            return jsonify({'transcript': ' '.join(texts)[:200], 'debug': logs, 'video_id': video_id})
+                        return jsonify({'transcript': ' '.join(texts), 'video_id': video_id})
+
+            elif api['type'] == 'invidious':
+                captions = api_data.get('captions', [])
+                if not captions:
+                    logs.append('방법3 ' + api['name'] + ': 자막 없음')
+                    continue
+                cap = None
+                for lang in ['ko', 'en']:
+                    cap = next((c for c in captions if c.get('language_code', '').startswith(lang)), None)
+                    if cap:
+                        break
+                if not cap:
+                    cap = captions[0]
+                cap_url = cap.get('url', '')
+                if not cap_url:
+                    logs.append('방법3 ' + api['name'] + ': URL 없음')
+                    continue
+                base = api['url'].rsplit('/api/', 1)[0]
+                full_url = base + cap_url if cap_url.startswith('/') else cap_url
+                cap_res = requests.get(full_url, timeout=10)
+                if cap_res.status_code == 200 and len(cap_res.text) > 50:
+                    texts = extract_texts(cap_res.text)
+                    if texts:
+                        logs.append('방법3 ' + api['name'] + ' 성공: ' + str(len(' '.join(texts))) + '자')
+                        if debug:
+                            return jsonify({'transcript': ' '.join(texts)[:200], 'debug': logs, 'video_id': video_id})
+                        return jsonify({'transcript': ' '.join(texts), 'video_id': video_id})
+
+            logs.append('방법3 ' + api['name'] + ': 자막 파싱 실패')
+        except Exception as e:
+            logs.append('방법3 ' + api['name'] + ' 오류: ' + str(e))
+
+    # 방법 4: timedtext API 직접 호출
     for lang in ['ko', 'en']:
         try:
             tt_url = 'https://www.youtube.com/api/timedtext?v=' + video_id + '&lang=' + lang + '&fmt=srv3'
@@ -383,18 +458,18 @@ def get_transcript(video_id):
             if tt_res.status_code == 200 and len(tt_res.text) > 100:
                 texts = extract_texts(tt_res.text)
                 if texts:
-                    logs.append('방법3 timedtext ' + lang + ' 성공: ' + str(len(' '.join(texts))) + '자')
+                    logs.append('방법4 timedtext ' + lang + ' 성공: ' + str(len(' '.join(texts))) + '자')
                     if debug:
                         return jsonify({'transcript': ' '.join(texts)[:200], 'debug': logs, 'video_id': video_id})
                     return jsonify({'transcript': ' '.join(texts), 'video_id': video_id})
                 else:
-                    logs.append('방법3 timedtext ' + lang + ': extractTexts 실패, len=' + str(len(tt_res.text)))
+                    logs.append('방법4 timedtext ' + lang + ': extractTexts 실패, len=' + str(len(tt_res.text)))
             else:
-                logs.append('방법3 timedtext ' + lang + ': HTTP ' + str(tt_res.status_code) + ' len=' + str(len(tt_res.text)))
+                logs.append('방법4 timedtext ' + lang + ': HTTP ' + str(tt_res.status_code) + ' len=' + str(len(tt_res.text)))
         except Exception as e:
-            logs.append('방법3 timedtext ' + lang + ' 오류: ' + str(e))
+            logs.append('방법4 timedtext ' + lang + ' 오류: ' + str(e))
 
-    # 방법 4: embed 페이지에서 자막 추출
+    # 방법 5: embed 페이지에서 자막 추출
     try:
         embed_res = requests.get(
             'https://www.youtube.com/embed/' + video_id + '?hl=ko',
@@ -423,24 +498,24 @@ def get_transcript(video_id):
                     if cap_res.status_code == 200:
                         texts = extract_texts(cap_res.text)
                         if texts:
-                            logs.append('방법4 embed 성공: ' + str(len(' '.join(texts))) + '자')
+                            logs.append('방법5 embed 성공: ' + str(len(' '.join(texts))) + '자')
                             if debug:
                                 return jsonify({'transcript': ' '.join(texts)[:200], 'debug': logs, 'video_id': video_id})
                             return jsonify({'transcript': ' '.join(texts), 'video_id': video_id})
                         else:
-                            logs.append('방법4 embed: extractTexts 실패')
+                            logs.append('방법5 embed: extractTexts 실패')
                     else:
-                        logs.append('방법4 embed: 자막다운 HTTP ' + str(cap_res.status_code))
+                        logs.append('방법5 embed: 자막다운 HTTP ' + str(cap_res.status_code))
                 else:
-                    logs.append('방법4 embed: 자막트랙 없음')
+                    logs.append('방법5 embed: 자막트랙 없음')
             else:
-                logs.append('방법4 embed: 캡션데이터 없음')
+                logs.append('방법5 embed: 캡션데이터 없음')
         else:
-            logs.append('방법4 embed: HTTP ' + str(embed_res.status_code))
+            logs.append('방법5 embed: HTTP ' + str(embed_res.status_code))
     except Exception as e:
-        logs.append('방법4 embed 오류: ' + str(e))
+        logs.append('방법5 embed 오류: ' + str(e))
 
-    # 방법 5: 웹 스크래핑
+    # 방법 6: 웹 스크래핑
     try:
         page_res = requests.get(
             'https://www.youtube.com/watch?v=' + video_id + '&hl=ko&gl=KR',
@@ -470,22 +545,22 @@ def get_transcript(video_id):
                     if cap_res.status_code == 200:
                         texts = extract_texts(cap_res.text)
                         if texts:
-                            logs.append('방법3 웹스크래핑 성공: ' + str(len(' '.join(texts))) + '자')
+                            logs.append('방법6 웹스크래핑 성공: ' + str(len(' '.join(texts))) + '자')
                             if debug:
                                 return jsonify({'transcript': ' '.join(texts)[:200], 'debug': logs, 'video_id': video_id})
                             return jsonify({'transcript': ' '.join(texts), 'video_id': video_id})
                         else:
-                            logs.append('방법3 웹스크래핑: extractTexts 실패')
+                            logs.append('방법6 웹스크래핑: extractTexts 실패')
                     else:
-                        logs.append('방법3 웹스크래핑: 자막다운 HTTP ' + str(cap_res.status_code))
+                        logs.append('방법6 웹스크래핑: 자막다운 HTTP ' + str(cap_res.status_code))
                 else:
-                    logs.append('방법3 웹스크래핑: 자막트랙 없음')
+                    logs.append('방법6 웹스크래핑: 자막트랙 없음')
             else:
-                logs.append('방법3 웹스크래핑: ytInitialPlayerResponse 없음')
+                logs.append('방법6 웹스크래핑: ytInitialPlayerResponse 없음')
         else:
-            logs.append('방법3 웹스크래핑: 페이지 HTTP ' + str(page_res.status_code))
+            logs.append('방법6 웹스크래핑: 페이지 HTTP ' + str(page_res.status_code))
     except Exception as e:
-        logs.append('방법3 웹스크래핑 오류: ' + str(e))
+        logs.append('방법6 웹스크래핑 오류: ' + str(e))
 
     if debug:
         return jsonify({'error': 'No captions', 'debug': logs}), 404
