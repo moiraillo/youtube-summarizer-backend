@@ -255,6 +255,25 @@ def get_transcript(video_id):
     # 방법 2: Innertube API (2회 재시도)
     clients = [
         {
+            'name': 'IOS',
+            'payload': {
+                'context': {
+                    'client': {
+                        'clientName': 'IOS',
+                        'clientVersion': '19.45.4',
+                        'hl': 'ko',
+                        'gl': 'KR',
+                        'deviceMake': 'Apple',
+                        'deviceModel': 'iPhone16,2',
+                        'osName': 'iOS',
+                        'osVersion': '18.1.0.22B83'
+                    }
+                },
+                'videoId': video_id
+            },
+            'key': 'AIzaSyB-63vPrdThhKuerbB2N_l7Kwwcxj6yUAc'
+        },
+        {
             'name': 'ANDROID',
             'payload': {
                 'context': {
@@ -269,6 +288,24 @@ def get_transcript(video_id):
                 'videoId': video_id
             },
             'key': 'AIzaSyA8eiZmM1FaDVjRy-df2KTyQ_vz_yYM39w'
+        },
+        {
+            'name': 'TV_EMBED',
+            'payload': {
+                'context': {
+                    'client': {
+                        'clientName': 'TVHTML5_SIMPLY_EMBEDDED_PLAYER',
+                        'clientVersion': '2.0',
+                        'hl': 'ko',
+                        'gl': 'KR'
+                    },
+                    'thirdParty': {
+                        'embedUrl': 'https://www.google.com'
+                    }
+                },
+                'videoId': video_id
+            },
+            'key': 'AIzaSyAO_FJ2SlqU8Q4STEHLGCilw_Y9_11qcW8'
         },
         {
             'name': 'WEB',
@@ -295,6 +332,7 @@ def get_transcript(video_id):
                 res = requests.post(
                     'https://youtubei.googleapis.com/youtubei/v1/player?key=' + c['key'],
                     json=c['payload'],
+                    headers={'Cookie': 'SOCS=CAISNQgDEitib3FfaWRlbnRpdHlmcm9udGVuZHVpc2VydmVyXzIwMjMwODI5LjA3X3AxGgJlbiACGgYIgLC_pwY; CONSENT=PENDING+987'},
                     timeout=10
                 )
                 if res.status_code != 200:
@@ -337,10 +375,11 @@ def get_transcript(video_id):
     # 방법 3: 웹 스크래핑
     try:
         page_res = requests.get(
-            'https://www.youtube.com/watch?v=' + video_id,
+            'https://www.youtube.com/watch?v=' + video_id + '&hl=ko&gl=KR',
             headers={
                 'User-Agent': 'Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/120.0.0.0 Safari/537.36',
-                'Accept-Language': 'ko-KR,ko;q=0.9,en;q=0.8'
+                'Accept-Language': 'ko-KR,ko;q=0.9,en;q=0.8',
+                'Cookie': 'SOCS=CAISNQgDEitib3FfaWRlbnRpdHlmcm9udGVuZHVpc2VydmVyXzIwMjMwODI5LjA3X3AxGgJlbiACGgYIgLC_pwY; CONSENT=PENDING+987'
             },
             timeout=15
         )
