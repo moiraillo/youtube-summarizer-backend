@@ -372,7 +372,75 @@ def get_transcript(video_id):
             except Exception as e:
                 logs.append('방법2 ' + c['name'] + ' 시도' + str(attempt+1) + ' 오류: ' + str(e))
 
-    # 방법 3: 웹 스크래핑
+    # 방법 3: timedtext API 직접 호출
+    for lang in ['ko', 'en']:
+        try:
+            tt_url = 'https://www.youtube.com/api/timedtext?v=' + video_id + '&lang=' + lang + '&fmt=srv3'
+            tt_res = requests.get(tt_url, headers={
+                'User-Agent': 'Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36',
+                'Cookie': 'SOCS=CAISNQgDEitib3FfaWRlbnRpdHlmcm9udGVuZHVpc2VydmVyXzIwMjMwODI5LjA3X3AxGgJlbiACGgYIgLC_pwY; CONSENT=PENDING+987'
+            }, timeout=10)
+            if tt_res.status_code == 200 and len(tt_res.text) > 100:
+                texts = extract_texts(tt_res.text)
+                if texts:
+                    logs.append('방법3 timedtext ' + lang + ' 성공: ' + str(len(' '.join(texts))) + '자')
+                    if debug:
+                        return jsonify({'transcript': ' '.join(texts)[:200], 'debug': logs, 'video_id': video_id})
+                    return jsonify({'transcript': ' '.join(texts), 'video_id': video_id})
+                else:
+                    logs.append('방법3 timedtext ' + lang + ': extractTexts 실패, len=' + str(len(tt_res.text)))
+            else:
+                logs.append('방법3 timedtext ' + lang + ': HTTP ' + str(tt_res.status_code) + ' len=' + str(len(tt_res.text)))
+        except Exception as e:
+            logs.append('방법3 timedtext ' + lang + ' 오류: ' + str(e))
+
+    # 방법 4: embed 페이지에서 자막 추출
+    try:
+        embed_res = requests.get(
+            'https://www.youtube.com/embed/' + video_id + '?hl=ko',
+            headers={
+                'User-Agent': 'Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36',
+                'Cookie': 'SOCS=CAISNQgDEitib3FfaWRlbnRpdHlmcm9udGVuZHVpc2VydmVyXzIwMjMwODI5LjA3X3AxGgJlbiACGgYIgLC_pwY; CONSENT=PENDING+987'
+            },
+            timeout=15
+        )
+        if embed_res.status_code == 200:
+            match = re.search(r'"captions":\s*(\{.+?"\})', embed_res.text)
+            if not match:
+                match = re.search(r'ytInitialPlayerResponse\s*=\s*(\{.+?\});', embed_res.text)
+            if match:
+                player_data = jsonlib.loads(match.group(1))
+                tracks = (player_data.get('captions', player_data).get('playerCaptionsTracklistRenderer', {}).get('captionTracks', []))
+                if tracks:
+                    track = None
+                    for lang in ['ko', 'en']:
+                        track = next((t for t in tracks if t.get('languageCode') == lang), None)
+                        if track:
+                            break
+                    if not track:
+                        track = tracks[0]
+                    cap_res = requests.get(track['baseUrl'], timeout=10)
+                    if cap_res.status_code == 200:
+                        texts = extract_texts(cap_res.text)
+                        if texts:
+                            logs.append('방법4 embed 성공: ' + str(len(' '.join(texts))) + '자')
+                            if debug:
+                                return jsonify({'transcript': ' '.join(texts)[:200], 'debug': logs, 'video_id': video_id})
+                            return jsonify({'transcript': ' '.join(texts), 'video_id': video_id})
+                        else:
+                            logs.append('방법4 embed: extractTexts 실패')
+                    else:
+                        logs.append('방법4 embed: 자막다운 HTTP ' + str(cap_res.status_code))
+                else:
+                    logs.append('방법4 embed: 자막트랙 없음')
+            else:
+                logs.append('방법4 embed: 캡션데이터 없음')
+        else:
+            logs.append('방법4 embed: HTTP ' + str(embed_res.status_code))
+    except Exception as e:
+        logs.append('방법4 embed 오류: ' + str(e))
+
+    # 방법 5: 웹 스크래핑
     try:
         page_res = requests.get(
             'https://www.youtube.com/watch?v=' + video_id + '&hl=ko&gl=KR',
